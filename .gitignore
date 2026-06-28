@@ -118,5 +118,12 @@ terraform.rc
 .claire/
 
 # ── POC folders — local only, not deployed ───────────────────────────────────
-riia-ai-org/
+# riia-ai-org holds /enhance run logs (operational data — kept local like jun-demo),
+# but the agent-ops/runs/ dir skeleton is tracked so a fresh clone can run /enhance.
+riia-ai-org/*
+!riia-ai-org/agent-ops/
+riia-ai-org/agent-ops/*
+!riia-ai-org/agent-ops/runs/
+riia-ai-org/agent-ops/runs/*
+!riia-ai-org/agent-ops/runs/.gitkeep
 rita-build-portfolio/

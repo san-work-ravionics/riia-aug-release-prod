@@ -1,7 +1,7 @@
 # Feature 32 — RIIA Agent Performance + RL Improvement: Plan Status
 
-**Last updated:** 2026-06-27
-**Overall status:** `[~] Phases 1+2 DEPLOYED to prod (0178a44, 2026-06-27 — June-release golden version) — Phases 3–5 pending on separate branch/env`
+**Last updated:** 2026-06-28
+**Overall status:** `[~] Phases 1+2 DEPLOYED to prod (0178a44, 2026-06-27 — June-release golden version). Phase 3 env/intent code complete; Phase 3.3 eval showed V2 LOSES to static control → Phase 3.5 (RL Reward Realignment) opened 2026-06-28 (Aug release, repo riia-aug-release-prod)`
 **Requirements:** `project-office/features/Jun/32 riia-agent-performance-rl/REQUIREMENTS.md`
 
 ---
@@ -12,9 +12,10 @@
 |---|---|---|---|
 | Phase 1 | Agent Performance Data Model & Instrumentation | `[x] Complete` (merge `c68601e`) | — |
 | Phase 2 | Dashboard: RIIA Agent Performance Section | `[x] Complete` (merge `c68601e`; UI redesign 2026-06-27) | — |
-| Phase 3 | RL Plan Step 1 — Close Scenario → Execution Bridge | `[ ] Not started` | Phase 1 |
-| Phase 4 | RL Plan Step 2 — Outcome → Strategy/Scenario Closed Loop | `[ ] Not started` | Phase 1, Phase 3 |
-| Phase 5 | Validation & Rollout Gate | `[ ] Not started` | Phase 3, Phase 4 |
+| Phase 3 | RL Plan Step 1 — Close Scenario → Execution Bridge | `[~] Env/intent code done; 3.3 eval failed (V2 < static)` | Phase 1 |
+| Phase 3.5 | **RL Reward Realignment** (Sharpe/MDD objective, not profit) | `[ ] Not started — opened 2026-06-28` | Phase 3 |
+| Phase 4 | RL Plan Step 2 — Outcome → Strategy/Scenario Closed Loop | `[ ] Not started` | Phase 1, Phase 3.5 |
+| Phase 5 | Validation & Rollout Gate | `[ ] Not started` | Phase 3.5, Phase 4 |
 
 ---
 
@@ -80,6 +81,35 @@ Section renders with live data for all 7 agents, no console errors, visual style
 ### Acceptance Gate
 Backtest shows RL-suggested hedge timing is no worse than the current static threshold on historical MDD breach events; human review sign-off recorded before proceeding to Phase 4.
 
+> **3.3 RESULT (2026-06-28):** evaluation showed the V2 policy **loses to the
+> static control** (`run_static_baseline_v2`) on the objective. Root cause: the
+> reward optimises *profit*, not *Sharpe>1 & MDD<10%*. Acceptance gate NOT met →
+> Phase 3.5 opened to realign the reward before re-running 3.3.
+
+---
+
+## Phase 3.5 — RL Reward Realignment
+
+**Status:** `[ ] Not started` — opened 2026-06-28 (Aug release). Blocks Phase 3 acceptance.
+**Agent:** Architect (reward design) → Engineer (worktree) → QA (test-set comparison)
+**Effort estimate:** 10–16 hours (reward redesign + retrain + honest held-out eval)
+**Requirements:** see REQUIREMENTS.md → "Phase 3.5 — RL Reward Realignment" (findings F1–F6 + deliverables)
+
+### Tasks
+
+| # | Task | Status | Notes |
+|---|---|---|---|
+| 3.5.1 | Fix train/eval timing inconsistency (F2) | `[ ]` | training `step()` must earn bar `t+1`, not bar `t`; or drop contemporaneous `daily_return` from obs. Add unit test asserting causal alignment |
+| 3.5.2 | Anchor hard MDD constraint at −10% for all tolerances (F3) | `[ ]` | tolerance modulates de-risking aggressiveness only, not the breach point |
+| 3.5.3 | Replace return reward with Sharpe-aligned reward (F1) | `[ ]` | Differential Sharpe Ratio (Moody & Saffell) per-step, OR terminal `Sharpe − heavy·max(0,MDD−0.10)`; add running return moments to obs (F5) |
+| 3.5.4 | Wire `temporal_split` test set into eval (F4) | `[ ]` | select on val, **report on test**; align eval tolerance with graded metric |
+| 3.5.5 | Drop patch-stack once reward aligned | `[ ]` | remove `LAMBDA_CASH_BY_TOL/OUTCOME/DOWNSIDE` + graded breach term |
+| 3.5.6 | Signal sanity check before more tuning | `[ ]` | do features predict 1–5d forward move? If not, ship static baseline; RL only where it adds edge |
+| 3.5.7 | Retrain + re-run 3.3 comparison on held-out test | `[ ]` | gate: Sharpe>1, MDD>−10%, ≥ static; golden env stays 0-change |
+
+### Acceptance Gate
+On a held-out **test** window the V2 policy meets Sharpe > 1.0 AND MDD > −10% and is ≥ the static baseline on Sharpe without a worse MDD; golden `trading_env.py` unchanged (frozen-guard test green); human sign-off before Phase 4.
+
 ---
 
 ## Phase 4 — RL Plan Step 2 — Outcome → Strategy/Scenario Closed Loop
@@ -130,6 +160,7 @@ User has explicitly approved production rollout in writing (chat record acceptab
 | 2026-06-27 | Phase 3 design | Architect design doc for `RIIATradingEnvV2` written → `docs/design-RIIATradingEnvV2-phase3.md`. Golden `RIIATradingEnv` frozen; V2 is a new class/file with Discrete(4) (+Hedge action), 10–11 obs (`dd_vs_tolerance`, `is_hedged`), tolerance-relative graded reward (risk_tolerance→MDD map), recommendation-only Execution-Analyst intent, isolated `rita_ddqn_v2` model lineage. Phase 3 to land on a branch off `june-release-golden` |
 | 2026-06-27 | Phase 3 env build | Engineer (inline, uncommitted working tree on golden HEAD): wrote `core/trading_env_v2.py` (`RIIATradingEnvV2` + `train_agent_v2` + `run_episode_v2`) and `tests/unit/test_trading_env_v2.py` (11 tests green). Golden `trading_env.py` = 0 changes (verified by frozen-Discrete(3) guard test) |
 | 2026-06-27 | Phase 3 intent wiring | Engineer (inline, uncommitted): `hedge_advice` intent + `execution_hedge` dispatch handler (recommendation-only, graceful when untrained) + `INTENT_TO_AGENT` entry in `classifier.py`; `recommend_hedge`/`load_agent_v2` in `trading_env_v2.py`; thin V2 branch in `ml_dispatch.py`. Tests expanded to 15 (incl. no-order-path guard). All 32 (V2 + agent_performance) green; modules import clean; no intent-count assertions broken. **Code for Phase 3 complete — only the actual SB3 training run + backtest comparison (3.3) remains, held for explicit go-ahead (gated)** |
+| 2026-06-28 | Phase 3.3 eval + reward review | Code review of V2 RL stack (`trading_env_v2.py`, `ml_dispatch.py` V2 branch, `performance.py`). **Finding: V2 policy underperforms the static control because the reward optimises profit, not the Sharpe>1 & MDD<10% objective.** Logged 6 findings (F1–F6): F1 profit-shaped reward; F2 train/eval timing inconsistency (training earns the same bar whose `daily_return` is in the obs; eval earns next bar); F3 `RISK_TOLERANCE_MDD` −15/−25% contradicts the −10% gate; F4 selection/eval optimism (`temporal_split` test set unused); F5 no path-state for a path-dependent objective (POMDP); F6 break-even hedge cost overfit to ASML. Opened **Phase 3.5 — RL Reward Realignment** (REQUIREMENTS + tasks 3.5.1–3.5.7). No code changed — review + planning only |
 | 2026-06-27 | Phase 3 design review | Reviewer pass (inline) verified claims vs code. 3 findings fixed in doc: (1) no existing `execution_analyst` intent — must create a new one + `INTENT_TO_AGENT` entry; (2) golden `train_agent`/`run_episode` hardcode `RIIATradingEnv` + 3-action map → V2 ships own `train_agent_v2`/`run_episode_v2` so `trading_env.py` stays 0-change; (3) `mdd_tolerance` must be sampled per training episode for the policy to generalise. Verdict: approve w/ changes (applied). Doc ready for Engineer |
 
 ---

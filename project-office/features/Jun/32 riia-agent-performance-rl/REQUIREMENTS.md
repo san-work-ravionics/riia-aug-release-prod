@@ -148,6 +148,60 @@ check in `performance.py`.
 
 ---
 
+### Phase 3.5 — RL Reward Realignment (added 2026-06-28, Aug release)
+
+**Trigger:** The Phase 3.3 train+backtest evaluation showed the V2 policy
+(`RIIATradingEnvV2`) **underperforming the static-threshold control**
+(`run_static_baseline_v2`) on the project objective. Code review (2026-06-28)
+identified the root cause and concrete defects below.
+
+**Objective restated (load-bearing):** the goal is **Sharpe ratio > 1.0 AND max
+drawdown < 10%** — i.e. risk-adjusted return within a hard drawdown cap. **It is
+NOT profit maximisation.** This is the exact gate `performance.py`
+`compute_all_metrics` already encodes (`sharpe_constraint_met = sr > 1.0`,
+`drawdown_constraint_met = mdd > -0.10`).
+
+**Root cause:** the V2 reward optimises a *different* objective than the one we
+grade on. `trading_env_v2.py:251` makes the primary per-step reward the portfolio
+*return*; maximising the discounted sum of per-step returns ≈ maximising terminal
+wealth (profit), not Sharpe/MDD. The stack of hand-tuned penalty terms
+(`LAMBDA_BREACH/DOWNSIDE/CASH_BY_TOL/OUTCOME`) are heuristic patches bending a
+return-maximiser toward risk-adjustment — the dated comments document the
+resulting thrashing (always-hedge → flee-to-cash → under-hedge). A risk-capping
+static rule beats a return-seeker on risk-adjusted terms, as observed.
+
+**Findings (ranked by impact):**
+
+| # | Finding | Evidence | Severity |
+|---|---|---|---|
+| F1 | Reward is profit-shaped, not Sharpe/MDD-shaped (objective misalignment) | `trading_env_v2.py:251`; risk-free hurdle (`performance.py:18`) ignored | BLOCKING |
+| F2 | Train/eval timing inconsistency — training earns the *same bar's* return whose `daily_return` is in the obs (contemporaneous/lookahead); eval earns the *next* bar (causal) | `trading_env_v2.py:234,243` vs `run_episode_v2:466–476`; inherited from golden `trading_env.py:159–162` vs `run_episode:285–306` | BLOCKING |
+| F3 | MDD tolerances (`-15%/-25%` for med/high) contradict the `-10%` acceptance gate — reward permits drawdowns that auto-fail the scorecard | `RISK_TOLERANCE_MDD` (`trading_env_v2.py:46`) vs `performance.py:85` | BLOCKING |
+| F4 | Selection/eval optimism — `temporal_split` (train/val/**test**) is dead code; `ml_dispatch.py:139–141` does an 80/20 split with no test set; best-of-N selects on val Sharpe and ml_dispatch reports on the same val_df; training samples tolerance uniformly but eval is medium-only | `ml_dispatch.py:139–141,185`; `train_best_of_n_v2:384` | ADVISORY |
+| F5 | Path-dependent objective, but obs carries no running-volatility / running-Sharpe state → policy cannot perceive what it's graded on (POMDP) | `_get_obs` (`trading_env_v2.py:190–210`) | ADVISORY |
+| F6 | Break-even hedge cost overfit to one instrument's training sample (ASML) → hedge timing won't generalise; single-instrument runs | `HEDGE_COST_PER_DAY` comments (`trading_env_v2.py:52–58`); `ml_dispatch.py` per-instrument | ADVISORY |
+
+**Deliverables:**
+
+| Deliverable | Description |
+|---|---|
+| Sharpe-aligned reward in `RIIATradingEnvV2` | Replace per-step *return* reward with a **Differential Sharpe Ratio** (Moody & Saffell) incremental reward (dense, Markov, cumulates to Sharpe), or a **terminal episodic** `Sharpe − heavy·max(0, MDD−0.10)` reward. Add running first/second return moments to the observation (fixes F5). |
+| Causal training alignment | Apply the **next bar's** return in training `step()` (and/or drop contemporaneous `daily_return` from the obs) so training and eval optimise the same temporal alignment (fixes F2). |
+| Hard MDD constraint at −10% | Anchor the breach penalty / episode-termination at `-0.10` regardless of tolerance; use `risk_tolerance` only to modulate de-risking aggressiveness, not the breach point (fixes F3). |
+| Honest held-out evaluation | Wire `temporal_split` into `ml_dispatch`: select on val, **report on test**; align eval tolerance with the graded metric (fixes F4). |
+| Drop the patch-stack | Once the reward is Sharpe-aligned, remove `LAMBDA_CASH_BY_TOL/OUTCOME/DOWNSIDE` and the graded breach term (they exist only to counteract the return-maximising primary term). |
+| Signal sanity check | Before further reward engineering, measure whether the features (RSI/MACD/BB/trend/ATR) predict the 1–5d forward move at all. If not, **no reward change beats a reactive static rule** — ship the static control as baseline and apply RL only where it adds measurable edge. |
+| Multi-instrument pooling (optional) | Train across instruments so hedge timing has enough independent drawdown episodes; re-derive hedge cost from the BSM path, not a single-sample fit. |
+
+**Acceptance Criteria:**
+- [ ] On a **held-out test window** (not the selection/val window), the V2 policy meets **Sharpe > 1.0 AND MDD > −10%**, and is **≥ the static baseline** on Sharpe without a worse MDD
+- [ ] Training and evaluation use the **same causal return alignment** (F2 closed) — verified by a unit test that the env earns bar `t+1` for an action taken at bar `t`
+- [ ] The hard −10% MDD constraint engages for **all** tolerance levels (F3 closed)
+- [ ] Reward redesign is a change to `RIIATradingEnvV2` / V2-owned trainers only — **golden `trading_env.py` and `rita_ddqn_model.zip` stay at 0 changes** (frozen-env guard test still green)
+- [ ] Result logged via existing `training_tracker.py`; human sign-off recorded before Phase 4
+
+---
+
 ### Phase 4 — RL Plan Step 2: Outcome → Strategy/Scenario Closed Loop
 
 **Goal:** Feed realized trade outcomes (from Phase 1 `agent_performance.outcome_status`) back
